@@ -64,7 +64,6 @@ async function getBusinessData(businesses: any[], dbClient: MongoClient, collect
 
         console.log('Searching for', searchQuery);
 
-        // console.time('Start');
         try {
             const businessResponse: any = await searchBusinesses(searchQuery, browser);
 
@@ -84,13 +83,11 @@ async function getBusinessData(businesses: any[], dbClient: MongoClient, collect
 
                 await dbClient.db().collection(collection).replaceOne({ _id: business._id }, business);
 
-                // console.timeEnd('Start');
             }
 
             // Alternative businesses
             else {
                 console.log('Only alternative businesses found for Delaware', businessResponse);
-                // console.timeEnd('Start');
                 console.log('End in else', {
                     message: `No business found with exact name of ${searchQuery}. Did you mean one of the alternative businesses?`,
                     alternativeBusinesses: businessResponse
