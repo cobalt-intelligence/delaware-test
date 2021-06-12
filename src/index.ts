@@ -1,53 +1,38 @@
 import { Browser, ElementHandle, Page } from "puppeteer";
 import dotenv from 'dotenv';
-import csvtojson from 'csvtojson';
-import { MongoClient } from 'mongodb';
-import * as json2csv from 'json2csv';
-import * as fs from 'fs';
 
-const puppeteerExtra = require('puppeteer-extra');
-const pluginStealth = require('puppeteer-extra-plugin-stealth');
-const RecaptchaPlugin = require('puppeteer-extra-plugin-recaptcha');
+import puppeteerExtra from 'puppeteer-extra';
+import pluginStealth from 'puppeteer-extra-plugin-stealth';
+import RecaptchaPlugin from 'puppeteer-extra-plugin-recaptcha';
 
 dotenv.config();
 
 (async () => {
-    const dbUrl = `mongodb://${process.env.cobaltIntelligenceDbUser}:${process.env.cobaltIntelligenceDbPass}@${process.env.cobaltIntelligenceDbUrl}/${process.env.cobaltIntelligenceDb}`;
-    const dbClient = new MongoClient(dbUrl, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true
-    });
+    // List of businesses looks like this:
+    const businesses = [
+        {
+            legalBusinessName: 'ALL-POWER MANUFACTURING CO.INC.'
+        },
+        {
+            legalBusinessName: 'SUPERIOR BUILDING SERVICES, INC.'
+        },
+        {
+            legalBusinessName: 'WOODWARD HRT, INC.'
+        },
+        {
+            legalBusinessName: 'PORTER LEE CORPORATION'
+        }
+    ];
 
-    await dbClient.connect();
-    const collection = 'deSosBusinesses';    
-    const businesses = await dbClient.db().collection(collection).find({}, {projection: {_id: 0}}).toArray();
-    
+    console.log('Business length', businesses.length);
 
-    const csv = json2csv.parse(businesses);
+    await getBusinessData(businesses);
 
-    fs.writeFileSync('Delaware businesses.csv', csv);
-    // const businesses = await dbClient.db().collection(collection).find({ sosId: { $exists: false } }).toArray();
-
-    // console.log('Business length', businesses.length);
-
-    // const chunkedBusinesses = chunk(businesses, 10);
-
-    // const promises: any[] = [];
-    
-    // for (let i = 0; i < chunkedBusinesses.length; i++) {
-    //     const chunkedBusiness = chunkedBusinesses[i];
-    
-    //     promises.push(getBusinessData(chunkedBusiness, dbClient, collection));
-        
-    // }
-
-    // await Promise.all(promises);
-    
-    await dbClient.close();
+    console.log('Businesses', businesses);
 
 })();
 
-async function getBusinessData(businesses: any[], dbClient: MongoClient, collection: string) {
+async function getBusinessData(businesses: any[]) {
     puppeteerExtra.use(
         RecaptchaPlugin({
             provider: { id: '2captcha', token: process.env.captchaToken },
@@ -55,7 +40,7 @@ async function getBusinessData(businesses: any[], dbClient: MongoClient, collect
         })
     );
     puppeteerExtra.use(pluginStealth());
-    const browser = await puppeteerExtra.launch({ headless: true });
+    const browser = await puppeteerExtra.launch({ headless: true } as any);
 
     for (let i = 0; i < businesses.length; i++) {
         const business = businesses[i];
@@ -81,7 +66,7 @@ async function getBusinessData(businesses: any[], dbClient: MongoClient, collect
                 business.agentZip = businessResponse.agentZip;
                 business.phoneNumber = businessResponse.phoneNumber;
 
-                await dbClient.db().collection(collection).replaceOne({ _id: business._id }, business);
+                return business;
 
             }
 
@@ -94,7 +79,6 @@ async function getBusinessData(businesses: any[], dbClient: MongoClient, collect
                 });
 
                 business.sosId = 'No business found';
-                await dbClient.db().collection(collection).replaceOne({ _id: business._id }, business);
             }
         }
         catch (e) {
