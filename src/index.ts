@@ -1,38 +1,92 @@
 import { Browser, ElementHandle, Page } from "puppeteer";
 import dotenv from 'dotenv';
+import csvtojson from 'csvtojson';
+import { MongoClient } from 'mongodb';
+import * as json2csv from 'json2csv';
+import * as fs from 'fs';
+import { excludedNAICSCodes, includedEntityCodes } from "./filters";
 
-import puppeteerExtra from 'puppeteer-extra';
-import pluginStealth from 'puppeteer-extra-plugin-stealth';
-import RecaptchaPlugin from 'puppeteer-extra-plugin-recaptcha';
+const puppeteerExtra = require('puppeteer-extra');
+const pluginStealth = require('puppeteer-extra-plugin-stealth');
+const RecaptchaPlugin = require('puppeteer-extra-plugin-recaptcha');
 
 dotenv.config();
 
+
 (async () => {
-    // List of businesses looks like this:
-    const businesses = [
-        {
-            legalBusinessName: 'ALL-POWER MANUFACTURING CO.INC.'
-        },
-        {
-            legalBusinessName: 'SUPERIOR BUILDING SERVICES, INC.'
-        },
-        {
-            legalBusinessName: 'WOODWARD HRT, INC.'
-        },
-        {
-            legalBusinessName: 'PORTER LEE CORPORATION'
-        }
-    ];
+    const dbUrl = `mongodb://${process.env.cobaltIntelligenceDbUser}:${process.env.cobaltIntelligenceDbPass}@${process.env.cobaltIntelligenceDbUrl}/${process.env.cobaltIntelligenceDb}`;
+    const dbClient = new MongoClient(dbUrl, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true
+    });
+
+    await dbClient.connect();
+    const collection = 'deSosBusinesses';    
+    // const businesses = await dbClient.db().collection(collection).find({}, {projection: {_id: 0}}).toArray();
+    const businesses = await dbClient.db().collection(collection).find({ sosId: { $exists: false } }).toArray();
 
     console.log('Business length', businesses.length);
 
-    await getBusinessData(businesses);
+    const chunkedBusinesses = chunk(businesses, businesses.length / 10);
 
-    console.log('Businesses', businesses);
+    console.log('Total chunks', chunkedBusinesses.length);
 
+    const promises: any[] = [];
+
+    for (let i = 0; i < chunkedBusinesses.length; i++) {
+        const chunkedBusiness = chunkedBusinesses[i];
+
+        promises.push(getBusinessData(chunkedBusiness, dbClient, collection));
+
+    }
+
+    await Promise.all(promises);
+
+
+    await dbClient.close();
 })();
 
-async function getBusinessData(businesses: any[]) {
+async function parseBusinesses(dbClient: MongoClient) {
+    throw 'Are you sure you want to mass insert to db?';
+    const businesses = await csvtojson().fromFile('SAM-DE(48k).csv');
+
+    const formattedBusinesses: IBusinessWithSam[] = [];
+
+    console.log('Businesses', businesses[2001], businesses.length);
+
+    // Start at 2000 since we already did the first ones
+    for (let i = 2000; i < businesses.length; i++) {
+        const business = businesses[i];
+
+        if (!excludedNAICSCodes.includes(business.primaryNaics) && includedEntityCodes.includes(business.entityStructure)) {
+            const formattedBusiness: IBusinessWithSam = {
+                'SAM id': business._id,
+                duns: business.duns,
+                primaryNaics: business.primaryNaics,
+                legalBusinessName: business.legalBusinessName,
+                stateOfIncorporation: business.stateOfIncorporation,
+                countryOfIncorporation: business.countryOfIncorporation,
+                purposeOfRegistration: business.purposeOfRegistration,
+                entityStructure: business.entityStructure,
+                cage: business.cage,
+                "PHYSICAL ADDRESS LINE 1": business['PHYSICAL ADDRESS LINE 1'],
+                addressCity: business.addressCity,
+                addressCountry: business.addressCountry
+            };
+
+            formattedBusinesses.push(formattedBusiness);
+        }
+    }
+
+    await dbClient.db().collection('deSosBusinesses').insertMany(formattedBusinesses);
+
+    console.log('Formatted businesses', formattedBusinesses[0], formattedBusinesses.length);
+
+    console.log('type test', formattedBusinesses.filter(business => business.entityStructure === '2K').length);
+    console.log('naics test', formattedBusinesses.filter(business => business.primaryNaics === '541511').length);
+}
+
+async function getBusinessData(businesses: any[], dbClient: MongoClient, collection: string) {
     puppeteerExtra.use(
         RecaptchaPlugin({
             provider: { id: '2captcha', token: process.env.captchaToken },
@@ -40,7 +94,7 @@ async function getBusinessData(businesses: any[]) {
         })
     );
     puppeteerExtra.use(pluginStealth());
-    const browser = await puppeteerExtra.launch({ headless: true } as any);
+    const browser = await puppeteerExtra.launch({ headless: true });
 
     for (let i = 0; i < businesses.length; i++) {
         const business = businesses[i];
@@ -66,7 +120,7 @@ async function getBusinessData(businesses: any[]) {
                 business.agentZip = businessResponse.agentZip;
                 business.phoneNumber = businessResponse.phoneNumber;
 
-                return business;
+                await dbClient.db().collection(collection).replaceOne({ _id: business._id }, business);
 
             }
 
@@ -79,6 +133,7 @@ async function getBusinessData(businesses: any[]) {
                 });
 
                 business.sosId = 'No business found';
+                await dbClient.db().collection(collection).replaceOne({ _id: business._id }, business);
             }
         }
         catch (e) {
@@ -155,7 +210,7 @@ async function getBusinessDetails(page: Page): Promise<IBusiness> {
         agentStreetAddress: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentAddress1', element => element.textContent),
         agentCity: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentCity', element => element.textContent),
         agentState: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentState', element => element.textContent),
-        agentZip: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentState', element => element.textContent),
+        agentZip: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentPostalCode', element => element.textContent),
         phoneNumber: await page.$eval('#ctl00_ContentPlaceHolder1_lblAgentPhone', element => element.textContent),
     };
 
@@ -266,4 +321,19 @@ interface IBusiness {
     url?: string;
     industry?: string;
     sosId?: string;
+};
+
+interface IBusinessWithSam extends IBusiness {
+    'SAM id'?: string;
+    duns?: string;
+    primaryNaics?: string;
+    legalBusinessName?: string;
+    stateOfIncorporation?: string;
+    countryOfIncorporation?: string;
+    purposeOfRegistration?: string;
+    entityStructure?: string;
+    cage?: string;
+    'PHYSICAL ADDRESS LINE 1'?: string;
+    addressCity?: string;
+    addressCountry?: string;
 };
